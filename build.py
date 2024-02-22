@@ -1,7 +1,7 @@
-# SiteBuilder
+# StaticSiteBuilder
 # Marc Rochkind, 20-Feb-2024 and later
 # MIT license
-# https://github.com/MarcRochkind/SiteBuilder
+# https://github.com/MarcRochkind/StaticSiteBuilder
 
 from tkinter import *
 from tkinter import ttk
