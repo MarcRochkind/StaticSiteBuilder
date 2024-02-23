@@ -14,7 +14,8 @@ import os, re, html
 import markdown
 import time    
 import shutil
-import pysftp # https://pysftp.readthedocs.io/en/release_0.2.9/pysftp.html
+# Following needed only if SFTP is used
+#import pysftp # https://pysftp.readthedocs.io/en/release_0.2.9/pysftp.html
 from pathlib import Path
 
 current_page = None
@@ -67,13 +68,15 @@ def new_site():
 	new_site_with_folder(None)
 
 def process_js_files():
-	path = os.path.join(PAGES_FOLDER, 'masonry.pkgd.min.js')
-	shutil.copyfile(os.path.join(starting_folder, 'masonry.pkgd.min.js'), path)
-	sftp_put(path)
-	path = os.path.join(PAGES_FOLDER, 'imagesloaded.pkgd.min.js')
-	shutil.copyfile(os.path.join(starting_folder, 'imagesloaded.pkgd.min.js'), path)
-	sftp_put(path)
-
+	try:
+		path = os.path.join(PAGES_FOLDER, 'masonry.pkgd.min.js')
+		shutil.copyfile(os.path.join(starting_folder, 'masonry.pkgd.min.js'), path)
+		sftp_put(path)
+		path = os.path.join(PAGES_FOLDER, 'imagesloaded.pkgd.min.js')
+		shutil.copyfile(os.path.join(starting_folder, 'imagesloaded.pkgd.min.js'), path)
+		sftp_put(path)
+	except Exception as err:
+		messagebox.showerror("Missing JavaScript File", "@masonary will not work.\n\n" + str(err))
 def new_site_with_folder(folder):
 	global site_folder
 
