@@ -9,3 +9,4 @@ Principal features:
 * Created pages automatically are added to the site-wide menu, in a sidebar or, on small screens, as a hamburger menu.
 * Page headers, footers, menus, and CSS are automatically included, and you can control their contents if you want.
 * Pages can be edited inside the application, or with an external editor.
+* No server is required. You can host the site on Amazon S3, for example.
