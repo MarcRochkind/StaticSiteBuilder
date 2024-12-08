@@ -4,13 +4,14 @@
 # https://github.com/MarcRochkind/StaticSiteBuilder
 
 from tkinter import *
+from tkinter.ttk import *
 from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 from tkinter import scrolledtext
 from tkinter.simpledialog import askstring
 import webbrowser
-import os, re, html
+import os, re, html, subprocess, platform
 import markdown
 import time    
 import shutil
@@ -18,6 +19,7 @@ import shutil
 #import pysftp # https://pysftp.readthedocs.io/en/release_0.2.9/pysftp.html
 from pathlib import Path
 
+output_display = False
 current_page = None
 DATA_FOLDER = 'data'
 PAGES_FOLDER = '.'
@@ -32,6 +34,137 @@ status_label = None
 dirty = False
 want_prevnext = False
 menu_list = []
+macs = ''
+
+with open(os.path.join(starting_folder, '.macros.txt'), 'r') as f:
+	builtin_macros = f.read();
+	if builtin_macros[-1] != '\n':
+		builtin_macros += '\n';
+
+def get_args(s):
+	if s[-1] != '\n':
+		s += '\n'
+	first_word = None
+	a = []
+	n = s.find(' ')
+	if n >= 0:
+		a.append(s[n+1:-1])
+	else:
+		a.append('')
+	w = ''
+	escape = False
+	quoting = False
+	for c in s:
+		print('c', c)
+		if escape:
+			if c.isdigit():
+				w += '\\' + c # keep arg reference
+			elif c == '"':
+				w += '&quot;'
+			else:
+				w += '\\' + c
+			escape = False
+			continue
+		if quoting and c != '"':
+			if c == '\\':
+				escape = True
+			else:
+				w += c
+			continue
+		match c:
+			case ' ' | '\n':
+				if len(w) > 0:
+					w = w.replace('<', '&lt;')
+					w = w.replace('>', '&rt;')
+					if not first_word:
+						first_word = w
+					else:
+						a.append(w)
+					w = ''
+			case '"':
+				if len(w) == 0:
+					quoting = True
+				elif quoting:
+					quoting = False
+				else:
+					w += c
+			case _:
+				w += c
+	while len(a) < 10:
+		a.append('')
+	print('return from get_args', first_word, a)
+	return (first_word, a)
+
+def subst_args(mac, args):
+	for i in range(len(args)):
+		d = '\\' + str(i)
+		mac = mac.replace(d, args[i])
+		print('replace', d, args[i])
+	return mac
+
+def expand_macro_inner(s):
+	global macros
+
+	t = ''
+	had_expansion = False
+	in_macro = False
+	lines = s.splitlines(True)
+	macrodef = []
+	while True:
+		if len(macrodef) > 0:
+			x = macrodef[0]
+			print('from macrodef', x)
+			macrodef.pop(0)
+		elif len(lines) > 0:
+			x = lines[0]
+			print('from lines', x)
+			lines.pop(0)
+		else:
+			break;
+		if x[0] == '.' and len(macrodef) == 0:
+			(first_word, a) = get_args(x)
+			print('first_word', first_word)
+			if len(a) > 0:
+				if first_word == '.de' and len(a) > 1:
+					print('start define', a[1])
+					in_macro = True
+					mname = a[1]
+					mbody = ''
+					continue
+				elif first_word == '..':
+					print('stop define')
+					macros[mname] = mbody
+					print('macros', macros)
+					in_macro = False
+					continue
+				else:
+					k = first_word[1:]
+					print('expand1', first_word, k, macros)
+					if k in macros:
+						had_expansion = True
+						print('expand2', first_word)
+						y = subst_args(macros[k], a)
+						macrodef = y.splitlines(True)
+						continue
+		if in_macro:
+			mbody += x
+		else:
+			t += x
+	print(macros)
+	print('--------------\n', t)
+	return (had_expansion, t)
+
+def expand_macros(s):
+	global xtext, macros
+
+	macros = {}
+	b = True
+	while b:
+		(b, s) = expand_macro_inner(s)
+	if output_display:
+		xtext.delete("1.0", END)
+		xtext.insert(END, s)
+	return s
 
 def delete_status():
 	status_label.config(text='')
@@ -67,7 +200,7 @@ def open_site():
 def new_site():
 	new_site_with_folder(None)
 
-def process_js_files():
+def process_fixed_files():
 	try:
 		path = os.path.join(PAGES_FOLDER, 'masonry.pkgd.min.js')
 		shutil.copyfile(os.path.join(starting_folder, 'masonry.pkgd.min.js'), path)
@@ -77,6 +210,7 @@ def process_js_files():
 		sftp_put(path)
 	except Exception as err:
 		messagebox.showerror("Missing JavaScript File", "@masonary will not work.\n\n" + str(err))
+
 def new_site_with_folder(folder):
 	global site_folder
 
@@ -95,7 +229,7 @@ def new_site_with_folder(folder):
 		os.mkdir(DATA_FOLDER)
 	if not os.path.exists(PAGES_FOLDER):
 		os.mkdir(PAGES_FOLDER)
-	process_js_files()
+	process_fixed_files()
 	with open(text_path('@header'), 'w') as f:
 		f.write('**Page Header**\n')
 	save_html_page('@header')
@@ -103,6 +237,8 @@ def new_site_with_folder(folder):
 		f.write('*Page Footer*\n')
 	save_html_page('@footer')
 	with open(text_path('@settings'), 'w') as f:
+		f.write('\n')
+	with open(text_path('@macros'), 'w') as f:
 		f.write('\n')
 	with open(text_path('@site.css'), 'w') as f:
 		f.write('''#page-footer {
@@ -134,6 +270,11 @@ def new_site_with_folder(folder):
 def initialize_site():
 	global pages, current_page
 
+	p = text_path('@macros')
+	if not os.path.exists(p):
+		with open(p, 'w') as f:
+			f.write('\n')
+
 	pagetext.delete("1.0", END)
 	current_page = None
 	pages = []
@@ -146,14 +287,14 @@ def initialize_site():
 	process_settings();
 
 def populate_pages_listbox():
-	global pages
+	global pages, pagelistbox
 
 	pages = sorted(pages, key=str.casefold)
-	pagelistbox.delete(0,END)
+	pagelistbox.delete(0, END)
 	for p in pages:
 		pagelistbox.insert(END, p)
 
-def select_page():
+def select_page(e = None):
 	global current_page, site_folder
 
 	save_current_page()
@@ -189,6 +330,9 @@ def get_prevnext(page):
 	return (prev_link, next_link)
 
 def write_html(page, s, expand = True):
+	global macs
+
+	s = expand_macros(builtin_macros + macs + s)
 	(prev_link, next_link) = get_prevnext(page)
 	local_path = html_path(page)
 	h = build_html(page, s, prev_link, next_link, expand)
@@ -219,12 +363,16 @@ def save_html_page(page, expand = True):
 			sftp_put(path)
 
 def save_current_page():
-	global num_successful
+	global num_successful, macs
 
 	if not dirty:
 		return
 	num_successful = 0
 	if current_page:
+		with open(text_path('@macros'), 'r') as f:
+			macs = f.read()
+		if macs[-1] != '\n':
+			macs += '\n'
 		text = pagetext.get("1.0", END)
 		with open(text_path(current_page), 'w') as f:
 			f.write(text.strip())
@@ -233,6 +381,7 @@ def save_current_page():
 	process_menu() # in case title changed
 	if sftp and num_successful == 2:
 		status('Uploaded OK')
+	status(f'Saved "{current_page}"')
 
 # The @settings.txt file is for SFTP parameters, but SFTP is not enabled.
 # The file is still present in case some other settings are introduced in the future.
@@ -407,9 +556,6 @@ def build_html(page, s, prev_link, next_link, expand = True):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>{title}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Patua+One&display=swap" rel="stylesheet">
 '''
 	if masonry:
 		html1 += '''
@@ -761,12 +907,33 @@ def process_commands(mtext, celldisplay):
 # 		html_file = html_path(home_page)
 # 		webbrowser.open_new(html_file)
 
-def rebuild_all():
-	upload_site(True)
+def sync_site():
+	if not site_folder:
+		messagebox.showerror("Error", "No site is open.")
+		return
+	save_current_page()
+	try:
+		if platform.system() == 'Windows':
+			cmd = r'data\sync.bat'
+		else:
+			cmd = r'data\sync'
+		if os.path.isfile(cmd):
+			result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+			messagebox.showinfo('Sync', result.stdout)
+		else:
+			messagebox.showerror('File Missing', f"To use Sync, create a {cmd} file.")
+	except Exception as err:
+		messagebox.showerror("Error with data/sync", err)
 
-def upload_site(expand = True): # no longer really uploads -- just rebuilds
+def rebuild_all():
+	rebuild_site(True)
+
+def rebuild_site(expand = True):
 	global num_successful
 
+	if not site_folder:
+		messagebox.showerror("Error", "No site is open.")
+		return
 	num_successful = 0;
 	num_expected = len(pages) + 1 # settings not uploaded; two js files are
 	save_current_page()
@@ -776,14 +943,14 @@ def upload_site(expand = True): # no longer really uploads -- just rebuilds
 	for p in pages:
 		if p[0] != '@':
 			save_html_page(p, expand)
-	process_js_files()
+	process_fixed_files()
 	if sftp:
 		if num_successful == num_expected:
 			status(f'Uploaded OK ({num_successful} pages)')
 		else:
 			status(f'ERROR: Uploaded {num_successful} of {num_expected} pages')
 	else:
-		status(f'Rebuilt')
+		status('Rebuilt')
 
 def new_page():
 	if not site_folder:
@@ -836,53 +1003,60 @@ def reset_changed():
 	pagetext.edit_modified(False)
 	dirty = False
 
+def control_s(e):
+	save_current_page()
+
 root = Tk()
 root.title("StaticSiteBuilder")
 root.protocol("WM_DELETE_WINDOW", on_closing)
+root.columnconfigure(1, weight=1)
+root.rowconfigure(0, weight=1)
 
-fr = Frame(root)
-opensite_button = Button(fr, text="Open Site", command=open_site)
-opensite_button.pack(side=LEFT, padx=10, pady=10)
-newsite_button = Button(fr, text="New Site", command=new_site)
-newsite_button.pack(padx=10, pady=10)
-fr.grid(row=0, column=0, sticky='w')
+leftframe = ttk.Frame(root, width=36)
+leftframe.columnconfigure(1, weight=1)
+leftframe.rowconfigure(2, weight=1)
+leftframe.grid(column=0, row=0, sticky="nsw")
 
-fr = Frame(root)
-label1 = Label(fr, text='Pages')
-label1.pack()
-border_color = Frame(fr, background="black")
-pagelistbox = Listbox(border_color, width=30, height=18)
+rightframe = ttk.Frame(root)
+rightframe.columnconfigure(3, weight=1)
+rightframe.rowconfigure(1, weight=1)
+rightframe.grid(column=1, row=0, sticky="nsew")
+
+ttk.Button(leftframe, text="Open Site", command=open_site).grid(column=0, row=0)
+ttk.Button(leftframe, text="New Site", command=new_site).grid(column=1, row=0)
+ttk.Label(leftframe, text="Pages").grid(column=0, columnspan=2, row=1)
+pagelistbox = Listbox(leftframe, width=30, activestyle='none')
+pagelistbox.bind('<Double-Button>', select_page)
+pagelistbox.grid(column=0, row=2, columnspan=4, sticky="nsew")
+ttk.Button(leftframe, text="Select Page", command=select_page).grid(column=0, row=3)
+ttk.Button(leftframe, text="New Page", command=new_page).grid(column=1, row=3)
 populate_pages_listbox()
-border_color.pack() #grid(row=2, column=0, sticky='n')
-pagelistbox.pack(padx=1, pady=1) #grid(row=2, column=0, padx=1, pady=1, sticky='n')
-fr.grid(row=1, column=0, sticky='ns')
 
-fr = Frame(root)
-select_button = Button(fr, text="Select Page", command=select_page)
-select_button.pack(side=LEFT, padx=10, pady=10)
-new_button = Button(fr, text="New Page", command=new_page)
-new_button.pack(padx=10, pady=10)
-fr.grid(row=1, column=0, sticky='s')
-
-content_label = Label(root, text='Content')
-content_label.grid(row=0, column=1)
-pagetext = scrolledtext.ScrolledText(undo=True, wrap=WORD)
-#pagetext.pack(expand=True, fill=BOTH)
-pagetext.grid(row=1, column=1, sticky='nsew')
+content_label = ttk.Label(rightframe, text="Content")
+content_label.grid(column=0, row=0, columnspan=4)
+pagetext = scrolledtext.ScrolledText(rightframe, undo=True, wrap=WORD)
 pagetext.bind("<<Modified>>", on_changed)
+pagetext.grid(column=0, row=1, columnspan=4, sticky='nsew')
+ttk.Button(rightframe, text="Save Page", command=save_current_page).grid(column=0, row=2)
+ttk.Button(rightframe, text="Rebuild All", command=rebuild_all).grid(column=1, row=2)
+ttk.Button(rightframe, text="Sync", command=sync_site).grid(column=2, row=2)
+status_label = ttk.Label(rightframe, text='')
+status_label.grid(column=3, row=2, sticky='w')
 
-fr = Frame(root)
-save_button = Button(fr, text="Save Page", command=save_current_page)
-save_button.pack(side=LEFT, padx=10, pady=10)
-status_label = Label(fr, text='')
-status_label.pack(padx=10, pady=10)
-fr.grid(row=2, column=1, sticky='w')
-expand_button = Button(root, text="Rebuild All", command=rebuild_all)
-expand_button.grid(row=2, column=1, sticky='e', padx=10, pady=10)
+if output_display:
+	xtext = scrolledtext.ScrolledText(rightframe, undo=True, wrap=WORD)
+	xtext.grid(column=4, row=0, columnspan=1, rowspan=3, sticky='nsew')
 
-root.grid_columnconfigure(1, weight=1)
-root.grid_rowconfigure(1, weight=1)
 
-root.minsize(1000, 700)
+for child in leftframe.winfo_children(): 
+    child.grid_configure(padx=5, pady=5)
+for child in rightframe.winfo_children(): 
+    child.grid_configure(padx=5, pady=5)
+
+w = root.winfo_screenwidth()
+h = root.winfo_screenheight()
+root.geometry(str(int(.5 * w)) + 'x' + str(int(.6 * h)) + "+100+100")
+root.minsize(1000, 500) # width was 600
+root.bind('<Control-s>', control_s)
 
 root.mainloop()
